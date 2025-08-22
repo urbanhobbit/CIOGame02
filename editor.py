@@ -4,11 +4,14 @@ from pathlib import Path
 import datetime
 import os
 import shutil
+import zipfile
+import io
 
 # --- CONFIGURATION ---
 SCENARIOS_FILE = Path("scenarios.json")
 CONFIG_FILE = Path("config.json")
-BACKUP_DIR = Path("backups")
+# BACKUP_DIR is no longer needed for this approach
+# BACKUP_DIR = Path("backups") 
 
 # --- HELPER FUNCTIONS ---
 
@@ -62,44 +65,57 @@ def get_default_scenario(title="Yeni Senaryo Başlığı"):
 def backup_and_restore_ui():
     """Renders the UI for backup and restore operations in the sidebar."""
     st.sidebar.title("🗄️ Yedekleme & Geri Yükleme")
+
+    # --- Create and Download Backup ---
+    st.sidebar.subheader("Yedek İndir")
     
-    # --- Create Backup ---
-    if st.sidebar.button("Yeni Yedek Oluştur", use_container_width=True):
-        BACKUP_DIR.mkdir(exist_ok=True)
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        
-        backup_scenarios_path = BACKUP_DIR / f"scenarios_{timestamp}.json"
-        backup_config_path = BACKUP_DIR / f"config_{timestamp}.json"
-        
+    # Create zip in memory
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
         if SCENARIOS_FILE.exists():
-            shutil.copy2(SCENARIOS_FILE, backup_scenarios_path)
+            zip_file.writestr(SCENARIOS_FILE.name, SCENARIOS_FILE.read_bytes())
         if CONFIG_FILE.exists():
-            shutil.copy2(CONFIG_FILE, backup_config_path)
-            
-        st.sidebar.success(f"Yedek oluşturuldu: {timestamp}")
+            zip_file.writestr(CONFIG_FILE.name, CONFIG_FILE.read_bytes())
+    
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
+    st.sidebar.download_button(
+        label="Mevcut Yapılandırmayı İndir (.zip)",
+        data=zip_buffer.getvalue(),
+        file_name=f"cio_game_backup_{timestamp}.zip",
+        mime="application/zip",
+        use_container_width=True
+    )
 
     # --- Restore from Backup ---
-    if BACKUP_DIR.exists():
-        backups = sorted(
-            list(set([p.stem.split('_')[1] for p in BACKUP_DIR.glob("scenarios_*.json")])),
-            reverse=True
-        )
-        if backups:
-            st.sidebar.markdown("---")
-            selected_backup = st.sidebar.selectbox("Geri Yüklemek için bir yedek seçin:", backups)
-            
-            if st.sidebar.button("Seçili Yedeği Geri Yükle", use_container_width=True):
-                backup_scenarios_path = BACKUP_DIR / f"scenarios_{selected_backup}.json"
-                backup_config_path = BACKUP_DIR / f"config_{selected_backup}.json"
-                
-                if backup_scenarios_path.exists():
-                    shutil.copy2(backup_scenarios_path, SCENARIOS_FILE)
-                if backup_config_path.exists():
-                    shutil.copy2(backup_config_path, CONFIG_FILE)
-                
-                st.sidebar.success(f"'{selected_backup}' yedeği geri yüklendi!")
-                st.sidebar.info("Değişiklikleri görmek için sayfayı yenileyin.")
-                st.rerun()
+    st.sidebar.subheader("Yedekten Geri Yükle")
+    uploaded_file = st.sidebar.file_uploader(
+        "Bir yedek (.zip) dosyası yükleyin", type="zip"
+    )
+
+    if uploaded_file is not None:
+        try:
+            with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
+                # Check for required files in zip
+                file_list = zip_ref.namelist()
+                has_scenarios = SCENARIOS_FILE.name in file_list
+                has_config = CONFIG_FILE.name in file_list
+
+                if not has_scenarios or not has_config:
+                    st.sidebar.error("Yüklenen ZIP dosyası 'scenarios.json' ve 'config.json' dosyalarını içermiyor.")
+                else:
+                    # Extract and save
+                    scenarios_data = json.loads(zip_ref.read(SCENARIOS_FILE.name))
+                    config_data = json.loads(zip_ref.read(CONFIG_FILE.name))
+                    
+                    save_data(SCENARIOS_FILE, scenarios_data)
+                    save_data(CONFIG_FILE, config_data)
+                    
+                    st.sidebar.success("Yedek başarıyla geri yüklendi!")
+                    st.sidebar.info("Değişiklikleri görmek için sayfayı yenileyin.")
+                    # We can't rerun from here as it would re-trigger the upload loop
+        except Exception as e:
+            st.sidebar.error(f"Geri yükleme sırasında bir hata oluştu: {e}")
+
 
 def add_scenario_ui(scenarios_data):
     """Renders the UI for adding a new scenario."""
@@ -269,7 +285,6 @@ def main():
              save_data(SCENARIOS_FILE, scenarios_data)
              save_data(CONFIG_FILE, config_data)
              st.sidebar.success("Tüm veriler başarıyla kaydedildi!")
-             st.sidebar.info("Değişikliklerin oyuna yansıması için oyunu yeniden başlatmanız gerekebilir.")
         else:
             st.sidebar.warning("Kaydetme işlemi sadece 'Düzenle' modunda yapılabilir.")
 
